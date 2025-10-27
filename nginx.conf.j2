@@ -1,0 +1,35 @@
+upstream eleve_backend {
+  {% for host in groups['eleve_servers'] %}
+  server {{ hostvars[host]['ansible_host'] }}:8080;
+  {% endfor %}
+}
+
+upstream chatbot_backend {
+  {% for host in groups['chatbot_server'] %}
+  server {{ hostvars[host]['ansible_host'] }}:8081;
+  {% endfor %}
+}
+
+server {
+  listen 80 default_server;
+  server_name _;
+
+  root /var/www/frontend;
+  index index.html;
+
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+
+  location /api/ {
+    proxy_pass http://eleve_backend/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+  }
+
+  location /chatbot/api/ {
+    proxy_pass http://chatbot_backend/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+  }
+}

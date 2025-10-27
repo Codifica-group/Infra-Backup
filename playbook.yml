@@ -1,0 +1,276 @@
+---
+- name: 1. Configurar o Servidor de Banco de Dados (MySQL)
+  hosts: db_server
+  become: yes
+  vars_files:
+    - secrets.yml
+  tasks:
+    - name: Atualizar cache do APT
+      apt:
+        update_cache: yes
+
+    - name: Instalar o servidor MySQL
+      apt:
+        name: mysql-server
+        state: present
+
+    - name: Garantir que MySQL esteja rodando e habilitado no boot
+      systemd:
+        name: mysql
+        state: started
+        enabled: yes
+
+    - name: Copiar scripts SQL para o servidor
+      copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+      loop:
+        - { src: 'Database/script_eleve.sql', dest: '/tmp/script_eleve.sql' }
+        - { src: 'Database/script_chatbot.sql', dest: '/tmp/script_chatbot.sql' }
+
+    - name: Criar os bancos de dados
+      community.mysql.mysql_db:
+        name: "{{ item }}"
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      loop:
+        - eleve_db
+        - chatbot_db
+
+    - name: Criar usuário do banco de dados
+      community.mysql.mysql_user:
+        name: "{{ db_username }}"
+        password: "{{ db_password }}"
+        priv: "*.*:ALL"
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Importar scripts SQL para os bancos de dados
+      community.mysql.mysql_db:
+        name: "{{ item.db }}"
+        state: import
+        target: "{{ item.script }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      loop:
+        - { db: 'eleve_db', script: '/tmp/script_eleve.sql' }
+        - { db: 'chatbot_db', script: '/tmp/script_chatbot.sql' }
+
+    - name: Configurar MySQL para aceitar conexões da rede privada
+      lineinfile:
+        path: /etc/mysql/mysql.conf.d/mysqld.cnf
+        regexp: '^bind-address'
+        line: 'bind-address = 0.0.0.0'
+      notify: Reiniciar MySQL
+
+  handlers:
+    - name: Reiniciar MySQL
+      systemd:
+        name: mysql
+        state: restarted
+
+# -------------------------------------------------------------------------------------------------------------------
+
+- name: 2. Configurar Servidores de Backend (Docker, RabbitMQ, Aplicações)
+  hosts: backend_servers
+  become: yes
+  vars_files:
+    - secrets.yml
+  tasks:
+    - name: Instalar pré-requisitos do Docker
+      apt:
+        name: ['apt-transport-https', 'ca-certificates', 'curl', 'gnupg', 'lsb-release']
+        state: present
+        update_cache: yes
+
+    - name: Adicionar chave GPG oficial do Docker
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Adicionar repositório Docker
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_lsb.codename }} stable
+        state: present
+
+    - name: Instalar Docker Engine
+      apt:
+        name: ['docker-ce', 'docker-ce-cli', 'containerd.io', 'docker-compose-plugin']
+        state: present
+
+    - name: Iniciar e habilitar serviço Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+    
+    - name: Adicionar usuário 'ubuntu' ao grupo 'docker'
+      user:
+        name: ubuntu
+        groups: docker
+        append: yes
+
+    - name: Iniciar container do RabbitMQ
+      community.docker.docker_container:
+        name: rabbitmq
+        image: rabbitmq:3-management
+        state: started
+        restart_policy: always
+        ports:
+          - "5672:5672"
+          - "15672:15672"
+        env:
+          RABBITMQ_DEFAULT_USER: "{{ rabbitmq_username }}"
+          RABBITMQ_DEFAULT_PASS: "{{ rabbitmq_password }}"
+
+# -------------------------------------------------------------------------------------------------------------------
+
+- name: 3. Configurar e Rodar Aplicação Eleve
+  hosts: eleve_servers
+  become: yes
+  vars_files:
+    - secrets.yml
+  tasks:
+    - name: Criar diretório de build temporário para Eleve
+      file:
+        path: "/tmp/build/eleve"
+        state: directory
+    
+    - name: Copiar JAR do Eleve
+      copy:
+        src: Backend/eleve.jar
+        dest: /tmp/build/eleve/eleve.jar
+      when: inventory_hostname in groups['eleve_servers']
+    
+    - name: Criar Dockerfile para Eleve
+      copy:
+        dest: /tmp/build/eleve/Dockerfile
+        content: |
+          FROM eclipse-temurin:21-jre-focal
+          WORKDIR /app
+          COPY eleve.jar .
+          EXPOSE 8080
+          ENTRYPOINT ["java", "-jar", "eleve.jar"]
+      when: inventory_hostname in groups['eleve_servers']
+
+    - name: Buildar imagem Docker do Eleve
+      community.docker.docker_image:
+        name: eleve-app
+        build:
+          path: /tmp/build/eleve
+        state: present
+        source: build
+      when: inventory_hostname in groups['eleve_servers']
+
+    - name: Rodar container Eleve
+      community.docker.docker_container:
+        name: "eleve-app-{{ inventory_hostname }}"
+        image: eleve-app
+        state: started
+        restart_policy: always
+        links:
+          - "rabbitmq:rabbitmq-host"
+        ports:
+          - "8080:8080"
+        env:
+          SPRING_PROFILES_ACTIVE: prod
+          DB_URL: "jdbc:mysql://{{ hostvars[groups['db_server'][0]]['ansible_host'] }}:3306/eleve_db"
+          DB_USERNAME: "{{ db_username }}"
+          DB_PASSWORD: "{{ db_password }}"
+          RABBITMQ_USERNAME: "{{ rabbitmq_username }}"
+          RABBITMQ_PASSWORD: "{{ rabbitmq_password }}"
+          SECRET_KEY: "{{ secret_key }}"
+          INTERNAL_API_KEY: "{{ internal_api_key }}"
+          ORS_API_KEY: "{{ ors_api_key }}"
+          CORS_ALLOWED_ORIGINS: "http://{{ hostvars[groups['webserver'][0]]['ansible_host'] }}"
+          TOKEN_EXPIRATION_TIME: 28800000
+      when: inventory_hostname in groups['eleve_servers']
+
+# -------------------------------------------------------------------------------------------------------------------
+
+- name: 4. Configurar e Rodar Aplicação Chatbot
+  hosts: chatbot_servers
+  become: yes
+  vars_files:
+    - secrets.yml
+  tasks:
+    - name: Criar diretório de build temporário para Chatbot
+      file:
+        path: "/tmp/build/chatbot"
+        state: directory
+
+    - name: Copiar JAR do Chatbot
+      copy:
+        src: Chatbot/chatbot.jar
+        dest: /tmp/build/chatbot/chatbot.jar
+      when: inventory_hostname in groups['chatbot_server']
+    
+    - name: Criar Dockerfile para Chatbot
+      copy:
+        dest: /tmp/build/chatbot/Dockerfile
+        content: |
+          FROM eclipse-temurin:17-jre-focal
+          WORKDIR /app
+          COPY chatbot.jar .
+          EXPOSE 8081
+          ENTRYPOINT ["java", "-jar", "chatbot.jar"]
+      when: inventory_hostname in groups['chatbot_server']
+
+    - name: Buildar imagem Docker do Chatbot
+      community.docker.docker_image:
+        name: chatbot-app
+        build:
+          path: /tmp/build/chatbot
+        state: present
+        source: build
+      when: inventory_hostname in groups['chatbot_server']
+
+    - name: Rodar container Chatbot
+      community.docker.docker_container:
+        name: "chatbot-app-{{ inventory_hostname }}"
+        image: chatbot-app
+        state: started
+        restart_policy: always
+        links:
+          - "rabbitmq:rabbitmq-host"
+        ports:
+          - "8081:8081"
+        env:
+          SPRING_PROFILES_ACTIVE: "prod-terminal"
+          DB_URL: "jdbc:mysql://{{ hostvars[groups['db_server'][0]]['ansible_host'] }}:3306/chatbot_db"
+          DB_USERNAME: "{{ db_username }}" 
+          DB_PASSWORD: "{{ db_password }}"
+          API_URL: "http://{{ hostvars[groups['webserver'][0]]['ansible_host'] }}/api/"
+          INTERNAL_API_KEY: "{{ internal_api_key }}"
+          CORS_ALLOWED_ORIGINS: "http://{{ hostvars[groups['webserver'][0]]['ansible_host'] }}"
+      when: inventory_hostname in groups['chatbot_server']
+
+# -------------------------------------------------------------------------------------------------------------------
+
+- name: 5. Configurar o Servidor Web (Nginx)
+  hosts: webserver
+  become: yes
+  tasks:
+    - name: Instalar Nginx
+      apt:
+        name: nginx
+        state: present
+        update_cache: yes
+
+    - name: Copiar arquivos do Frontend
+      copy:
+        src: Frontend/build/
+        dest: /var/www/frontend
+        owner: www-data
+        group: www-data
+
+    - name: Configurar Nginx (Load Balancer e Proxy Reverso)
+      template:
+        src: nginx.conf.j2
+        dest: /etc/nginx/sites-available/default
+      notify: Reiniciar Nginx
+      
+  handlers:
+    - name: Reiniciar Nginx
+      systemd:
+        name: nginx
+        state: reloaded
