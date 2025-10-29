@@ -286,12 +286,33 @@
         group: www-data
       tags: frontend_deploy
 
-    - name: Configurar Nginx (Load Balancer e Proxy Reverso)
+    - name: Configurar Nginx (Load Balancer e Proxy Reverso - HTTP)
       template:
         src: nginx.conf.j2
         dest: /etc/nginx/sites-available/default
-      notify: Reiniciar Nginx
       tags: nginx_config
+
+    - name: Configurar Nginx (Load Balancer - TCP/Stream para AMQP)
+      ansible.builtin.blockinfile:
+        path: /etc/nginx/nginx.conf
+        block: |
+          # Bloco STREAM para tráfego TCP puro (porta 5672 do RabbitMQ)
+          stream {
+              upstream rabbitmq_amqp_backend {
+                  {% for host in groups['eleve_servers'] %}
+                  server {{ hostvars[host]['ansible_host'] }}:5672;
+                  {% endfor %}
+              }
+
+              server {
+                  listen 5672;
+                  proxy_pass rabbitmq_amqp_backend;
+              }
+          }
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - RABBITMQ STREAM"
+        insertafter: EOF
+      tags: nginx_config
+      notify: Reiniciar Nginx
       
   handlers:
     - name: Reiniciar Nginx

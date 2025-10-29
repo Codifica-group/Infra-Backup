@@ -11,6 +11,12 @@ http {
     {% endfor %}
   }
 
+  upstream rabbitmq_mgmt_backend {
+  {% for host in groups['eleve_servers'] %}
+  server {{ hostvars[host]['ansible_host'] }}:15672;
+  {% endfor %}
+}
+
   server {
     listen 80 default_server;
     server_name _;
@@ -46,28 +52,15 @@ http {
       proxy_set_header X-Internal-API-Key $http_x_internal_api_key;
     }
   }
-}
 
-stream {
-  upstream rabbitmq_amqp_backend {
-    {% for host in groups['eleve_servers'] %}
-    server {{ hostvars[host]['ansible_host'] }}:5672;
-    {% endfor %}
-  }
-
-  upstream rabbitmq_mgmt_backend {
-    {% for host in groups['eleve_servers'] %}
-    server {{ hostvars[host]['ansible_host'] }}:15672;
-    {% endfor %}
-  }
-
-  server {
-      listen 5672;
-      proxy_pass rabbitmq_amqp_backend;
-  }
-
-  server {
-      listen 15672;
-      proxy_pass rabbitmq_mgmt_backend;
+  location /rabbitmq/ {
+      proxy_pass http://rabbitmq_mgmt_backend/; 
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
   }
 }
