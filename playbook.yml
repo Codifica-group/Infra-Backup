@@ -14,6 +14,11 @@
         name: mysql-server
         state: present
 
+    - name: Instalar o driver MySQL do Python (usando PyMySQL)
+      apt:
+        name: python3-pymysql
+        state: present
+
     - name: Garantir que MySQL esteja rodando e habilitado no boot
       systemd:
         name: mysql
@@ -40,10 +45,16 @@
     - name: Criar usuário do banco de dados
       community.mysql.mysql_user:
         name: "{{ db_username }}"
+        host: '%'
         password: "{{ db_password }}"
         priv: "*.*:ALL"
         state: present
         login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Verificar se a importação do DB já foi feita (procurar flag)
+      ansible.builtin.stat:
+        path: /tmp/.db_scripts_imported
+      register: db_import_flag
 
     - name: Importar scripts SQL para os bancos de dados
       community.mysql.mysql_db:
@@ -54,6 +65,14 @@
       loop:
         - { db: 'eleve_db', script: '/tmp/script_eleve.sql' }
         - { db: 'chatbot_db', script: '/tmp/script_chatbot.sql' }
+      when: not db_import_flag.stat.exists
+      register: db_import_result
+
+    - name: Criar flag de importação do DB (para não rodar de novo)
+      ansible.builtin.file:
+        path: /tmp/.db_scripts_imported
+        state: touch
+      when: db_import_result.changed
 
     - name: Configurar MySQL para aceitar conexões da rede privada
       lineinfile:
@@ -76,9 +95,15 @@
   vars_files:
     - secrets.yml
   tasks:
-    - name: Instalar pré-requisitos do Docker
+    - name: Instalar pré-requisitos do Docker e sua biblioteca Python
       apt:
-        name: ['apt-transport-https', 'ca-certificates', 'curl', 'gnupg', 'lsb-release']
+        name: 
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - python3-docker
         state: present
         update_cache: yes
 
@@ -139,18 +164,16 @@
       copy:
         src: Backend/eleve.jar
         dest: /tmp/build/eleve/eleve.jar
-      when: inventory_hostname in groups['eleve_servers']
     
     - name: Criar Dockerfile para Eleve
       copy:
         dest: /tmp/build/eleve/Dockerfile
         content: |
-          FROM eclipse-temurin:21-jre-focal
+          FROM eclipse-temurin:21-jre-jammy
           WORKDIR /app
           COPY eleve.jar .
           EXPOSE 8080
           ENTRYPOINT ["java", "-jar", "eleve.jar"]
-      when: inventory_hostname in groups['eleve_servers']
 
     - name: Buildar imagem Docker do Eleve
       community.docker.docker_image:
@@ -159,7 +182,6 @@
           path: /tmp/build/eleve
         state: present
         source: build
-      when: inventory_hostname in groups['eleve_servers']
 
     - name: Rodar container Eleve
       community.docker.docker_container:
@@ -176,14 +198,14 @@
           DB_URL: "jdbc:mysql://{{ hostvars[groups['db_server'][0]]['ansible_host'] }}:3306/eleve_db"
           DB_USERNAME: "{{ db_username }}"
           DB_PASSWORD: "{{ db_password }}"
+          SPRING_RABBITMQ_HOST: "rabbitmq-host"
           RABBITMQ_USERNAME: "{{ rabbitmq_username }}"
           RABBITMQ_PASSWORD: "{{ rabbitmq_password }}"
           SECRET_KEY: "{{ secret_key }}"
           INTERNAL_API_KEY: "{{ internal_api_key }}"
           ORS_API_KEY: "{{ ors_api_key }}"
-          CORS_ALLOWED_ORIGINS: "http://{{ hostvars[groups['webserver'][0]]['ansible_host'] }}"
-          TOKEN_EXPIRATION_TIME: 28800000
-      when: inventory_hostname in groups['eleve_servers']
+          CORS_ALLOWED_ORIGINS: "http://3.235.234.147"
+          TOKEN_EXPIRATION_TIME: "28800000"
 
 # -------------------------------------------------------------------------------------------------------------------
 
@@ -202,18 +224,16 @@
       copy:
         src: Chatbot/chatbot.jar
         dest: /tmp/build/chatbot/chatbot.jar
-      when: inventory_hostname in groups['chatbot_server']
     
     - name: Criar Dockerfile para Chatbot
       copy:
         dest: /tmp/build/chatbot/Dockerfile
         content: |
-          FROM eclipse-temurin:17-jre-focal
+          FROM eclipse-temurin:21-jre-jammy
           WORKDIR /app
           COPY chatbot.jar .
           EXPOSE 8081
           ENTRYPOINT ["java", "-jar", "chatbot.jar"]
-      when: inventory_hostname in groups['chatbot_server']
 
     - name: Buildar imagem Docker do Chatbot
       community.docker.docker_image:
@@ -222,7 +242,6 @@
           path: /tmp/build/chatbot
         state: present
         source: build
-      when: inventory_hostname in groups['chatbot_server']
 
     - name: Rodar container Chatbot
       community.docker.docker_container:
@@ -239,10 +258,12 @@
           DB_URL: "jdbc:mysql://{{ hostvars[groups['db_server'][0]]['ansible_host'] }}:3306/chatbot_db"
           DB_USERNAME: "{{ db_username }}" 
           DB_PASSWORD: "{{ db_password }}"
+          SPRING_RABBITMQ_HOST: "rabbitmq-host"
+          SPRING_RABBITMQ_USERNAME: "{{ rabbitmq_username }}"
+          SPRING_RABBITMQ_PASSWORD: "{{ rabbitmq_password }}"
           API_URL: "http://{{ hostvars[groups['webserver'][0]]['ansible_host'] }}/api/"
           INTERNAL_API_KEY: "{{ internal_api_key }}"
-          CORS_ALLOWED_ORIGINS: "http://{{ hostvars[groups['webserver'][0]]['ansible_host'] }}"
-      when: inventory_hostname in groups['chatbot_server']
+          CORS_ALLOWED_ORIGINS: "http://3.235.234.147"
 
 # -------------------------------------------------------------------------------------------------------------------
 
@@ -255,6 +276,7 @@
         name: nginx
         state: present
         update_cache: yes
+      tags: nginx_setup
 
     - name: Copiar arquivos do Frontend
       copy:
@@ -262,15 +284,18 @@
         dest: /var/www/frontend
         owner: www-data
         group: www-data
+      tags: frontend_deploy
 
     - name: Configurar Nginx (Load Balancer e Proxy Reverso)
       template:
         src: nginx.conf.j2
         dest: /etc/nginx/sites-available/default
       notify: Reiniciar Nginx
+      tags: nginx_config
       
   handlers:
     - name: Reiniciar Nginx
       systemd:
         name: nginx
         state: reloaded
+      tags: nginx_config
