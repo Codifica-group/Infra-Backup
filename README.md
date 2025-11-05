@@ -67,6 +67,21 @@ Somente após a execução bem-sucedida do Terraform, edite o arquivo `inventory
 
 ## 🚀 Como Executar
 
+### Terraform
+
+Abra um terminal dentro da pasta ``/Terraform`` e execute o seguinte comando:
+```bash
+terraform init
+
+terraform apply
+# Em seguida digite 'yes'
+```
+Ao fim da execução do terraform preencha o arquivo ``inventory.ini`` corretamente.
+
+---
+
+### Ansible
+
  Caso esteja no Windows o uso do **WSL é obrigatório!**
 
 Execute os seguintes comandos dentro do WSL:
@@ -176,4 +191,7 @@ ssh -J ubuntu@IP_PUBLICO ubuntu@IP_PRIVADO
 docker logs -f rabbitmq
 docker logs -f eleve-app-eleve1     # O nome do host deve bater com seu inventário
 docker logs -f chatbot-app-chat1
+
+# Destruir toda infraestrutura
+terraform destroy
 ```
