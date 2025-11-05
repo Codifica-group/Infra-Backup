@@ -292,6 +292,15 @@
         dest: /etc/nginx/sites-available/default
       tags: nginx_config
 
+    - name: Garantir que o site está habilitado (criar symlink)
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/default
+        dest: /etc/nginx/sites-enabled/default
+        state: link
+        force: yes
+      tags: nginx_config
+      notify: Reiniciar Nginx
+
     - name: Configurar Nginx (Load Balancer - TCP/Stream para AMQP)
       ansible.builtin.blockinfile:
         path: /etc/nginx/nginx.conf
@@ -318,5 +327,5 @@
     - name: Reiniciar Nginx
       systemd:
         name: nginx
-        state: reloaded
+        state: restarted
       tags: nginx_config
