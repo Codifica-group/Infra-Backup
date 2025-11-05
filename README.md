@@ -1,162 +1,140 @@
-# Automação de Infraestrutura AWS com Ansible
+# Automação de Infraestrutura AWS com Terraform e Ansible
 
-Este repositório contém um playbook Ansible projetado para configurar e implantar automaticamente uma aplicação web completa em uma infraestrutura AWS existente. O playbook automatiza a configuração de um bastion host (servidor web), servidores de backend, um banco de dados e o deploy do frontend.
+Este repositório contém um projeto completo de **Infrastructure as Code (IaC)** para provisionar e configurar uma arquitetura de aplicação web multi-camada na AWS. A automação é feita usando:
 
-A topologia de rede assume que apenas o servidor web (bastion) é acessível publicamente, e todos os outros servidores (backend, banco de dados) estão em uma sub-rede privada, acessíveis apenas através do bastion usando `ProxyJump`.
+1.  **Terraform** para construir a fundação da rede (VPC, subnets, gateways) e provisionar 5 instâncias EC2, chaves e grupos de segurança.
+2.  **Ansible** para configurar as instâncias, implantar as aplicações (via Docker), configurar o banco de dados (MySQL) e configurar o balanceador de carga (Nginx).
 
 ## 🏗️ Arquitetura da Aplicação
 
-A infraestrutura configurada por este playbook é composta por:
+A infraestrutura provisionada pelo Terraform é dividida em três camadas principais:
 
-* **Servidor Web (Nginx):** Atua como proxy reverso para os serviços de backend e serve o frontend estático. Também funciona como **Bastion Host (Jump Host)** para o Ansible.
-* **Servidores de Backend:**
-    * `Eleve`: Aplicação Java (eleve.jar).
-    * `Chatbot`: Aplicação Java (chatbot.jar).
-* **Servidor de Banco de Dados:** Servidor MySQL que hospeda os bancos de dados para ambas as aplicações (`script_eleve.sql`, `script_chatbot.sql`).
-* **Frontend:** Uma aplicação web estática (build de React/Vue/Angular).
+### 1. Rede (VPC)
+* Uma **VPC** (`10.0.0.0/24`) dividida em:
+    * **Subnet Pública:** Com um Internet Gateway (IGW) para acesso externo.
+    * **Subnet Privada:** Com um NAT Gateway para permitir que os serviços internos acessem a internet sem serem expostos.
+
+### 2. Segurança (Security Groups)
+* **`web` (Bastion/Nginx):** Permite tráfego público (HTTP/HTTPS/SSH).
+* **`app` (Aplicações):** Permite tráfego apenas do SG `web` (nas portas da aplicação) e SSH (vindo do bastion).
+* **`db` (Banco de Dados):** Permite tráfego apenas do SG `app` (porta MySQL) e SSH (vindo do bastion).
+
+### 3. Servidores (Instâncias EC2)
+* **`web-server-01` (Subnet Pública):** Atua como Bastion Host e Proxy Reverso (Nginx).
+* **`app-server-01` e `app-server-02` (Subnet Privada):** Rodam a aplicação principal e o RabbitMQ via Docker.
+* **`chatbot-server` (Subnet Privada):** Roda a aplicação do chatbot via Docker.
+* **`db-server-01` (Subnet Privada):** Roda o banco de dados MySQL.
 
 ## 📋 Pré-requisitos
 
-Antes de executar o playbook, você precisará de:
+Antes de iniciar, você precisará de:
 
-1.  **Infraestrutura AWS:** Instâncias EC2 já provisionadas (1 pública para o bastion, e as demais privadas).
-2.  **Ansible:** Instalado na sua máquina local ou no WSL.
-3.  **Chave SSH (`AWSKey.pem`):** A chave privada SSH (`.pem`) necessária para acessar suas instâncias EC2.
-4.  **WSL (Ubuntu):** O guia de execução é baseado em um ambiente WSL (Windows Subsystem for Linux).
-5.  **IPs das Instâncias:** Os endereços IP públicos e privados das suas instâncias EC2.
-
----
+* **WSL** (caso esteja usando Windows)
+* **AWS CLI**
+* **Terraform**
+* **Ansible**
 
 ## ⚙️ Configuração
 
-Siga estes passos para configurar o ambiente antes de executar o playbook.
+Siga estes passos para configurar o seu ambiente.
 
-### 1. Chave de Acesso AWS
+### 1. Configuração do Terraform
 
-Coloque sua chave privada SSH (`.pem`) na raiz deste repositório e renomeie-a para `AWSKey.pem`.
+#### 1.1 Configurar Credenciais da AWS CLI
 
-> **⚠️ ATENÇÃO: Segurança**
-> O arquivo `AWSKey.pem` **NUNCA** deve ser comitado no repositório Git. Adicione-o imediatamente ao seu arquivo `.gitignore`:
->
-> ```bash
-> echo "AWSKey.pem" >> .gitignore
-> ```
+- Obtenha sua **Access Key ID**, **Secret Access Key** e **Session Token** (caso seja uma conta de estudante).
 
-### 2. Inventário (`inventory.ini`)
+- Execute o comando no seu terminal:
+    ```bash
+    aws configure
+    ```
 
-Edite o arquivo `inventory.ini` e substitua os placeholders (`IP_PUBLICO_DO_WEB`, `IP_PRIVADO_...`) pelos endereços IP corretos das suas instâncias EC2.
+- Preencha os prompts na seguinte ordem:
 
-O arquivo deve se parecer com isto:
+    ```
+    AWS Access Key ID [None]: SUA_ACCESS_KEY
+    AWS Secret Access Key [None]: SUA_SECRET_KEY
+    AWS Session Token [None]: SUA_SESSION_TOKEN
+    Default region name [None]: us-east-1
+    Default output format [None]: json
+    ```
 
-```ini
-[webserver]
-web1 ansible_host=SEU_IP_PUBLICO_DO_WEB
+### 2. Configuração do Ansible
 
-[eleve_servers]
-eleve1 ansible_host=SEU_IP_PRIVADO_ELEVE_1
-eleve2 ansible_host=SEU_IP_PRIVADO_ELEVE_2
+### 2.1 Inventário (`inventory.ini`)
 
-[chatbot_servers]
-chat1 ansible_host=SEU_IP_PRIVADO_CHATBOT
+Somente após a execução bem-sucedida do Terraform, edite o arquivo `inventory.ini` e substitua os placeholders (`SEU_IP_PUBLICO`, `SEU_IP_PRIVADO`) pelos endereços IP corretos das suas instâncias EC2.
 
-[db_server]
-db1 ansible_host=SEU_IP_PRIVADO_DB
+## 🚀 Como Executar
 
-[backend_servers:children]
-eleve_servers
-chatbot_servers
+ Caso esteja no Windows o uso do **WSL é obrigatório!**
 
-[privatenet:children]
-eleve_servers
-chatbot_servers
-db_server
-
-[all:vars]
-ansible_user=ubuntu
-
-[privatenet:vars]
-ansible_ssh_common_args='-o ProxyJump=ubuntu@SEU_IP_PUBLICO_DO_WEB'
-```
-
-### 3. Variáveis Criptografadas (secrets.yml)
-
-Este arquivo armazena dados sensíveis, como senhas de banco de dados. Use o ansible-vault para editá-lo e inserir suas credenciais. Você será solicitado a criar uma senha para o "vault".
+Execute os seguintes comandos dentro do WSL:
 
 ```bash
-ansible-vault edit secrets.yml
-```
-
-### 🚀 Como Executar (Usando WSL)
-
-Estes passos detalham como executar o playbook a partir de um terminal WSL (Ubuntu).
-
-#### 1. Copiar Arquivos para o WSL
-
-Copie o diretório do projeto do Windows para o seu ambiente WSL (substitua pelo seu caminho real).
-
-```bash
-# Exemplo de comando para copiar do Windows para o home do WSL
+# Substitua os placeholders SEU_USUARIO e CAMINHO_DO_REPOSITORIO
 sudo cp -r "/mnt/c/Users/SEU_USUARIO/CAMINHO_DO_REPOSITORIO/Infra-Backup" ~/
 
-# Entrar no diretório do projeto
 cd ~/Infra-Backup
 ```
 
-#### 2. Configurar Permissões da Chave SSH
+---
+
+#### 1. Configurar Permissões da Chave SSH
 
 O SSH e o Ansible são muito rigorosos quanto às permissões da chave.
 
 ```bash
-# 1. Mudar o dono da chave para o seu usuário (crítico!)
-# (O 'root' não pode ser o dono se você estiver executando como 'ubuntu')
-sudo chown $USER:$USER SUA_CHAVE_AWS.pem
+sudo chown $USER:$USER AWSKey.pem
 
-# 2. Definir permissões restritas (leitura/escrita apenas para o dono)
-chmod 600 ./SUA_CHAVE_AWS.pem
+chmod 600 ./AWSKey.pem
 ```
 
-#### 3. Adicionar Chave ao SSH Agent
+#### 2. Adicionar Chave ao SSH Agent
 
 Isso permite que o Ansible use a chave para o ProxyJump (conexão bastion) sem pedir a senha da chave.
 
 ```bash
-# Iniciar o ssh-agent em segundo plano
 eval $(ssh-agent -s)
 
-# Adicionar sua chave ao agent
-ssh-add ./SUA_CHAVE_AWS.pem
+ssh-add ./AWSKey.pem
 ```
 
-#### 4. Testar a Conexão (Opcional, mas recomendado)
+#### 4. Testar a Conexão
 
-Antes de rodar o playbook, verifique se você consegue acessar uma máquina privada (ex: o DB) através do bastion.
+Antes de rodar o playbook, verifique se você consegue acessar uma máquina privada através do bastion.
 
 ```bash
 # Use os IPs do seu inventory.ini
-ssh -J ubuntu@SEU_IP_PUBLICO_DO_WEB ubuntu@SEU_IP_PRIVADO_DB
+ssh -J ubuntu@IP_PUBLICO ubuntu@IP_PRIVADO
 ```
 
-Se a conexão for bem-sucedida, você pode sair (exit) e prosseguir.
+Se a conexão for bem-sucedida, você pode sair digitando ``exit`` e prosseguir.
 
 #### 5. Executar o Playbook Ansible
 
-Finalmente, execute o playbook. Você precisará fornecer a senha do "vault" que criou no Passo 3 da Configuração.
+Você precisará fornecer a senha do vault.
 
 ```bash
 ansible-playbook playbook.yml --ask-vault-pass
+# Em seguida digite a senha do vault
 ```
+Ao fim da execução, teste sua conexão acessando ``http://IP_PUBLICO`` no seu navegador.
 
-O Ansible agora se conectará ao bastion (web1) e, a partir dele, pulará para as máquinas privadas para executar todas as tarefas de configuração e deploy.
+## 📂 Estrutura do Repositório
 
-### 📂 Estrutura do Repositório
+
 ```ini
 C:.
-│   ansible.cfg       # Configurações do Ansible (ex: caminho do inventário)
+│   ansible.cfg       # Configurações do Ansible
 │   inventory.ini     # Inventário de hosts (servidores)
 │   nginx.conf.j2     # Template Jinja2 para a configuração do Nginx
 │   playbook.yml      # O playbook principal que orquestra tudo
 │   README.md         # Este arquivo
-│   secrets.yml       # (CRIPTOGRAFADO) Variáveis sensíveis (senhas, etc.)
+│   secrets.yml       # (CRIPTOGRAFADO) Variáveis sensíveis
+│
+├───Terraform
+│       eleve.tf      # Script para provisionamento da infra
 │
 ├───Backend
 │       eleve.jar     # Artefato da aplicação "Eleve"
@@ -172,4 +150,30 @@ C:.
     └───build         # Build estático do frontend
 ```
 
+## 🛠️ Comandos Úteis
+
+```bash
+# Editar as variáveis criptografadas
+ansible-vault edit secrets.yml
+
+# Redefinir a senha de secrets.yml
+ansible-vault rekey secrets.yml
+
+# Criar novo arquivo de variáveis criptografadas
+ansible-vault create secrets.yml
+
+# Rodar apenas uma parte do playbook (ex: apenas reconfigurar o Nginx)
 ansible-playbook playbook.yml --tags "nginx_config" --ask-vault-pass
+
+# Rodar playbook a partir de uma tarefa específica
+ansible-playbook meu_playbook.yml --start-at-task="Nome da tarefa" --ask-vault-pass
+
+# Conectar via SSH em uma máquina privada
+ssh -J ubuntu@IP_PUBLICO ubuntu@IP_PRIVADO
+
+# Ver logs de um container em um dos servidores de backend (via SSH)
+# Você precisa estar conectado no servidor de backend primeiro
+docker logs -f rabbitmq
+docker logs -f eleve-app-eleve1     # O nome do host deve bater com seu inventário
+docker logs -f chatbot-app-chat1
+```
