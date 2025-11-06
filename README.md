@@ -168,6 +168,9 @@ C:.
 ## 🛠️ Comandos Úteis
 
 ```bash
+# Alterar session token da AWS
+aws configure set aws_session_token SEU_SESSION_TOKEN
+
 # Editar as variáveis criptografadas
 ansible-vault edit secrets.yml
 
