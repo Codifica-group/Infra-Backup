@@ -189,6 +189,9 @@ ansible-playbook meu_playbook.yml --start-at-task="Nome da tarefa" --ask-vault-p
 # Conectar via SSH em uma máquina privada
 ssh -J ubuntu@IP_PUBLICO ubuntu@IP_PRIVADO
 
+# Remover um ip da lista de hosts conhecidos
+ssh-keygen -f "/home/SEU_USUARIO/.ssh/known_hosts" -R "IP"
+
 # Ver logs de um container em um dos servidores de backend (via SSH)
 # Você precisa estar conectado no servidor de backend primeiro
 docker logs -f rabbitmq
