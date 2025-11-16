@@ -92,8 +92,6 @@
 - name: 2. Configurar Servidores de Backend (Docker, RabbitMQ, Aplicações)
   hosts: backend_servers
   become: yes
-  vars_files:
-    - secrets.yml
   tasks:
     - name: Instalar pré-requisitos do Docker e sua biblioteca Python
       apt:
@@ -134,19 +132,6 @@
         groups: docker
         append: yes
 
-    - name: Iniciar container do RabbitMQ
-      community.docker.docker_container:
-        name: rabbitmq
-        image: rabbitmq:3-management
-        state: started
-        restart_policy: always
-        ports:
-          - "5672:5672"
-          - "15672:15672"
-        env:
-          RABBITMQ_DEFAULT_USER: "{{ rabbitmq_username }}"
-          RABBITMQ_DEFAULT_PASS: "{{ rabbitmq_password }}"
-
 # -------------------------------------------------------------------------------------------------------------------
 
 - name: 3. Configurar e Rodar Aplicação Eleve
@@ -154,6 +139,7 @@
   become: yes
   vars_files:
     - secrets.yml
+    - vars.yml
   tasks:
     - name: Criar diretório de build temporário para Eleve
       file:
@@ -189,8 +175,6 @@
         image: eleve-app
         state: started
         restart_policy: always
-        links:
-          - "rabbitmq:rabbitmq-host"
         ports:
           - "8080:8080"
         env:
@@ -198,7 +182,12 @@
           DB_URL: "jdbc:mysql://{{ hostvars[groups['db_server'][0]]['ansible_host'] }}:3306/eleve_db"
           DB_USERNAME: "{{ db_username }}"
           DB_PASSWORD: "{{ db_password }}"
-          SPRING_RABBITMQ_HOST: "rabbitmq-host"
+          REDIS_HOST: "{{ elasticache_endpoint }}"
+          REDIS_PASSWORD: "{{ redis_password }}"
+          SPRING_DATA_REDIS_SSL_ENABLED: "true"
+          SPRING_RABBITMQ_HOST: "{{ hostvars[groups['chatbot_servers'][0]]['ansible_host'] }}"
+          SPRING_RABBITMQ_PORT: "5672"
+          SPRING_RABBITMQ_SSL_ENABLED: "false"
           RABBITMQ_USERNAME: "{{ rabbitmq_username }}"
           RABBITMQ_PASSWORD: "{{ rabbitmq_password }}"
           SECRET_KEY: "{{ secret_key }}"
@@ -214,7 +203,21 @@
   become: yes
   vars_files:
     - secrets.yml
+    - vars.yml
   tasks:
+    - name: Rodar container RabbitMQ na instância do Chatbot
+      community.docker.docker_container:
+        name: "rabbitmq"
+        image: "rabbitmq:3-management"
+        state: started
+        restart_policy: always
+        ports:
+          - "5672:5672"
+          - "15672:15672"
+        env:
+          RABBITMQ_DEFAULT_USER: "{{ rabbitmq_username }}"
+          RABBITMQ_DEFAULT_PASS: "{{ rabbitmq_password }}"
+
     - name: Criar diretório de build temporário para Chatbot
       file:
         path: "/tmp/build/chatbot"
@@ -249,21 +252,22 @@
         image: chatbot-app
         state: started
         restart_policy: always
-        links:
-          - "rabbitmq:rabbitmq-host"
         ports:
           - "8081:8081"
         env:
-          SPRING_PROFILES_ACTIVE: "prod-terminal"
+          SPRING_PROFILES_ACTIVE: "prod-telegram"
           DB_URL: "jdbc:mysql://{{ hostvars[groups['db_server'][0]]['ansible_host'] }}:3306/chatbot_db"
           DB_USERNAME: "{{ db_username }}" 
           DB_PASSWORD: "{{ db_password }}"
-          SPRING_RABBITMQ_HOST: "rabbitmq-host"
+          SPRING_RABBITMQ_HOST: "{{ hostvars[groups['chatbot_servers'][0]]['ansible_host'] }}"
+          SPRING_RABBITMQ_PORT: "5672"
+          SPRING_RABBITMQ_SSL_ENABLED: "false"
           SPRING_RABBITMQ_USERNAME: "{{ rabbitmq_username }}"
           SPRING_RABBITMQ_PASSWORD: "{{ rabbitmq_password }}"
           API_URL: "http://{{ hostvars[groups['webserver'][0]]['ansible_host'] }}/api/"
           INTERNAL_API_KEY: "{{ internal_api_key }}"
-          CORS_ALLOWED_ORIGINS: "http://3.235.234.147"
+          TELEGRAM_BOT_USERNAME: "{{ telegram_bot_username }}"
+          TELEGRAM_BOT_TOKEN: "{{ telegram_bot_token }}"
 
 # -------------------------------------------------------------------------------------------------------------------
 
@@ -291,6 +295,7 @@
         src: nginx.conf.j2
         dest: /etc/nginx/sites-available/default
       tags: nginx_config
+      notify: Reiniciar Nginx
 
     - name: Garantir que o site está habilitado (criar symlink)
       ansible.builtin.file:
@@ -301,28 +306,6 @@
       tags: nginx_config
       notify: Reiniciar Nginx
 
-    - name: Configurar Nginx (Load Balancer - TCP/Stream para AMQP)
-      ansible.builtin.blockinfile:
-        path: /etc/nginx/nginx.conf
-        block: |
-          # Bloco STREAM para tráfego TCP puro (porta 5672 do RabbitMQ)
-          stream {
-              upstream rabbitmq_amqp_backend {
-                  {% for host in groups['eleve_servers'] %}
-                  server {{ hostvars[host]['ansible_host'] }}:5672;
-                  {% endfor %}
-              }
-
-              server {
-                  listen 5672;
-                  proxy_pass rabbitmq_amqp_backend;
-              }
-          }
-        marker: "# {mark} ANSIBLE MANAGED BLOCK - RABBITMQ STREAM"
-        insertafter: EOF
-      tags: nginx_config
-      notify: Reiniciar Nginx
-      
   handlers:
     - name: Reiniciar Nginx
       systemd:

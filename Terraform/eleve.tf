@@ -18,6 +18,12 @@ variable "key_name" {
   default = "AWSKey"
 }
 
+variable "redis_password" {
+  type = string
+  description = "Senha (AUTH token) para o cluster Redis"
+  sensitive = true
+}
+
 # REDE (VPC, Subnets, Gateways)
 
 resource "aws_vpc" "main" {
@@ -49,6 +55,11 @@ resource "aws_subnet" "private" {
   }
 }
 
+resource "aws_elasticache_subnet_group" "main" {
+  name = "elasticache-subnet-group"
+  subnet_ids = [aws_subnet.private.id]
+}
+
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main.id
 
@@ -58,6 +69,7 @@ resource "aws_internet_gateway" "igw" {
 }
 
 # IP Elástico
+
 resource "aws_eip" "nat" {
   domain = "vpc"
 }
@@ -171,6 +183,21 @@ resource "aws_security_group" "app" {
     security_groups = [aws_security_group.web.id]
   }
 
+  ingress {
+    description = "RabbitMQ AMQP (intra-app)"
+    from_port = 5672
+    to_port = 5672
+    protocol = "tcp"
+    self = true
+  }
+  ingress {
+    description = "RabbitMQ Management (intra-app)"
+    from_port = 15672
+    to_port = 15672
+    protocol = "tcp"
+    self = true
+  }
+
   egress {
     from_port = 0
     to_port = 0
@@ -212,6 +239,31 @@ resource "aws_security_group" "db" {
 
   tags = {
     Name = "db"
+  }
+}
+
+resource "aws_security_group" "elasticache" {
+  name = "elasticache"
+  description = "Permitir conexoes do App Server ao ElastiCache"
+  vpc_id = aws_vpc.main.id
+
+  ingress {
+    description = "Redis"
+    from_port = 6379
+    to_port = 6379
+    protocol = "tcp"
+    security_groups = [aws_security_group.app.id]
+  }
+
+  egress {
+    from_port = 0
+    to_port = 0
+    protocol = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "elasticache-sg"
   }
 }
 
@@ -288,4 +340,61 @@ resource "aws_instance" "db_server_1" {
   tags = {
     Name = "db-server-01"  
   }
+}
+
+# Redis
+
+resource "aws_elasticache_replication_group" "main" {
+  replication_group_id = "eleve-redis-rg"
+  description = "Cluster Redis para cache da aplicação Eleve"
+  node_type = "cache.t3.micro"
+  num_cache_clusters = 1
+  automatic_failover_enabled = false
+  subnet_group_name = aws_elasticache_subnet_group.main.name
+  security_group_ids = [aws_security_group.elasticache.id]
+  transit_encryption_enabled = true
+  auth_token = var.redis_password
+  engine_version = "7.0"
+  parameter_group_name = "default.redis7"
+  maintenance_window = "sun:05:00-sun:06:00"
+}
+
+output "elasticache_endpoint" {
+  description = "Endpoint do Redis"
+  value = aws_elasticache_replication_group.main.primary_endpoint_address
+}
+
+# GERA ARQUIVO DE INVENTARIO PARA ANSIBLE
+resource "local_file" "ansible_inventory" {
+  filename = "../inventory.ini"
+
+  # Dependência do MQ removida
+  depends_on = [
+    aws_elasticache_replication_group.main,
+  ]
+
+  content = templatefile(
+    "../inventory.ini.tpl",
+    {
+      web_public_ip = aws_instance.web_server_1.public_ip
+      eleve1_private_ip = aws_instance.app_server_1.private_ip
+      eleve2_private_ip = aws_instance.app_server_2.private_ip
+      chat1_private_ip = aws_instance.chatbot_server_1.private_ip
+      db1_private_ip = aws_instance.db_server_1.private_ip
+    }
+  )
+}
+
+resource "local_file" "ansible_vars" {
+  filename = "../vars.yml"
+
+  # Dependência do MQ removida
+  depends_on = [
+    aws_elasticache_replication_group.main,
+  ]
+
+  # Variável do MQ removida
+  content = <<-EOT
+    elasticache_endpoint: ${aws_elasticache_replication_group.main.primary_endpoint_address}
+    EOT
 }

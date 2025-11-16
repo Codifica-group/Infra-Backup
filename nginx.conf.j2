@@ -11,7 +11,7 @@ upstream chatbot_backend {
 }
 
 upstream rabbitmq_mgmt_backend {
-{% for host in groups['eleve_servers'] %}
+{% for host in groups['chatbot_servers'] %}
 server {{ hostvars[host]['ansible_host'] }}:15672;
 {% endfor %}
 }
