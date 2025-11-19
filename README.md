@@ -2,12 +2,14 @@
 
 Este repositório contém um projeto completo de **Infrastructure as Code (IaC)** para provisionar e configurar uma arquitetura de aplicação web multi-camada na AWS. A automação é feita usando:
 
-1.  **Terraform** para construir a fundação da rede (VPC, subnets, gateways) e provisionar 5 instâncias EC2, chaves e grupos de segurança.
-2.  **Ansible** para configurar as instâncias, implantar as aplicações (via Docker), configurar o banco de dados (MySQL) e configurar o balanceador de carga (Nginx).
+1.  **Terraform** para construir a fundação da rede (VPC, subnets, gateways), provisionar 5 instâncias EC2, chaves, grupos de segurança e o serviço de Cache ElastiCache (Redis).
 
-## 🏗️ Arquitetura da Aplicação
+2.  **Ansible** para configurar as instâncias, implantar as aplicações (via Docker), configurar o banco de dados (MySQL), configurar o balanceador de carga (Nginx) e configurar o broker de mensagens (RabbitMQ).
 
-A infraestrutura provisionada pelo Terraform é dividida em três camadas principais:
+---
+## 🏗️ Arquitetura da Aplicação (Com Cache e Fila de Mensagens)
+
+A infraestrutura provisionada pelo Terraform e configurada pelo Ansible, sendo dividida em quatro camadas principais:
 
 ### 1. Rede (VPC)
 * Uma **VPC** (`10.0.0.0/24`) dividida em:
@@ -20,10 +22,14 @@ A infraestrutura provisionada pelo Terraform é dividida em três camadas princi
 * **`db` (Banco de Dados):** Permite tráfego apenas do SG `app` (porta MySQL) e SSH (vindo do bastion).
 
 ### 3. Servidores (Instâncias EC2)
-* **`web-server-01` (Subnet Pública):** Atua como Bastion Host e Proxy Reverso (Nginx).
-* **`app-server-01` e `app-server-02` (Subnet Privada):** Rodam a aplicação principal e o RabbitMQ via Docker.
-* **`chatbot-server` (Subnet Privada):** Roda a aplicação do chatbot via Docker.
+* **`web-server-01` (Subnet Pública):** Atua como Bastion Host e Proxy Reverso/Load Balancer (Nginx).
+* **`app-server-01` e `\app-server-02` (Subnet Privada):** Rodam a aplicação principal via Docker e se conectam ao DB e ao Redis.
+* **`chatbot-server` (Subnet Privada):** Roda a aplicação do chatbot via Docker, e hospeda o container RabbitMQ (broker de mensagens).
 * **`db-server-01` (Subnet Privada):** Roda o banco de dados MySQL.
+
+### 4. Serviços Gerenciados (ElastiCache)
+* **ElastiCache (Redis):** Um cluster Redis na Subnet Privada para cache da aplicação Eleve, com criptografia em trânsito e autenticação (auth_token).
+---
 
 ## 📋 Pré-requisitos
 
@@ -33,6 +39,7 @@ Antes de iniciar, você precisará de:
 * **AWS CLI**
 * **Terraform**
 * **Ansible**
+---
 
 ## ⚙️ Configuração
 
@@ -59,11 +66,21 @@ Siga estes passos para configurar o seu ambiente.
     Default output format [None]: json
     ```
 
+#### 1.2 Configurar Variáveis Sensíveis
+- Edite o arquivo /Terraform/terraform.tfvars e defina a senha do Redis:
+    ```hcl
+    redis_password = "sua_senha_do_redis"
+    ```
+---
+
 ### 2. Configuração do Ansible
 
-### 2.1 Inventário (`inventory.ini`)
+### 2.1 Inventário e Variáveis
 
-Somente após a execução bem-sucedida do Terraform, edite o arquivo `inventory.ini` e substitua os placeholders (`SEU_IP_PUBLICO`, `SEU_IP_PRIVADO`) pelos endereços IP corretos das suas instâncias EC2.
+O Terraform agora gera automaticamente os arquivos inventory.ini e vars.yml ao ser executado.
+- inventory.ini: Contém os IPs de todas as instâncias.
+- vars.yml: Contém o endereço do cluster ElastiCache (Redis) para uso nas aplicações.
+---
 
 ## 🚀 Como Executar
 
@@ -72,12 +89,10 @@ Somente após a execução bem-sucedida do Terraform, edite o arquivo `inventory
 Abra um terminal dentro da pasta ``/Terraform`` e execute o seguinte comando:
 ```bash
 terraform init
-
 terraform apply
 # Em seguida digite 'yes'
 ```
-Ao fim da execução do terraform preencha o arquivo ``inventory.ini`` corretamente.
-
+Ao fim da execução, o Terraform preencherá os arquivos inventory.ini e vars.yml automaticamente.
 ---
 
 ### Ansible
@@ -89,7 +104,6 @@ Execute os seguintes comandos dentro do WSL:
 ```bash
 # Substitua os placeholders SEU_USUARIO e CAMINHO_DO_REPOSITORIO
 sudo cp -r "/mnt/c/Users/SEU_USUARIO/CAMINHO_DO_REPOSITORIO/Infra-Backup" ~/
-
 cd ~/Infra-Backup
 ```
 
@@ -101,7 +115,6 @@ O SSH e o Ansible são muito rigorosos quanto às permissões da chave.
 
 ```bash
 sudo chown $USER:$USER AWSKey.pem
-
 chmod 600 ./AWSKey.pem
 ```
 
@@ -111,22 +124,22 @@ Isso permite que o Ansible use a chave para o ProxyJump (conexão bastion) sem p
 
 ```bash
 eval $(ssh-agent -s)
-
 ssh-add ./AWSKey.pem
 ```
 
-#### 4. Testar a Conexão
+#### 3. Testar a Conexão
 
 Antes de rodar o playbook, verifique se você consegue acessar uma máquina privada através do bastion.
 
 ```bash
 # Use os IPs do seu inventory.ini
 ssh -J ubuntu@IP_PUBLICO ubuntu@IP_PRIVADO
+# Digite 'yes' duas vezes
 ```
 
 Se a conexão for bem-sucedida, você pode sair digitando ``exit`` e prosseguir.
 
-#### 5. Executar o Playbook Ansible
+#### 4. Executar o Playbook Ansible
 
 Você precisará fornecer a senha do vault.
 
@@ -136,34 +149,40 @@ ansible-playbook playbook.yml --ask-vault-pass
 ```
 Ao fim da execução, teste sua conexão acessando ``http://IP_PUBLICO`` no seu navegador.
 
-## 📂 Estrutura do Repositório
+---
 
+## 📂 Estrutura do Repositório
 
 ```ini
 C:.
-│   ansible.cfg       # Configurações do Ansible
-│   inventory.ini     # Inventário de hosts (servidores)
-│   nginx.conf.j2     # Template Jinja2 para a configuração do Nginx
-│   playbook.yml      # O playbook principal que orquestra tudo
-│   README.md         # Este arquivo
-│   secrets.yml       # (CRIPTOGRAFADO) Variáveis sensíveis
+│   ansible.cfg       # Configurações do Ansible
+│   inventory.ini     # (GERADO AUTOMATICAMENTE) Inventário de hosts (servidores)
+│   inventory.ini.tpl # Template para geração do inventory.ini
+│   nginx.conf.j2     # Template Jinja2 para a configuração do Nginx
+│   playbook.yml      # O playbook principal que orquestra tudo
+│   README.md         # Este arquivo
+│   secrets.yml       # (CRIPTOGRAFADO) Variáveis sensíveis (DB, RabbitMQ, Chaves API)
+│   vars.yml          # (GERADO AUTOMATICAMENTE) Endpoint do Redis/ElastiCache
 │
 ├───Terraform
-│       eleve.tf      # Script para provisionamento da infra
+│       eleve.tf      # Script para provisionamento da infra
+│       terraform.tfvars # (ADICIONADO) Arquivo para variáveis sensíveis (redis_password)
 │
 ├───Backend
-│       eleve.jar     # Artefato da aplicação "Eleve"
+│       eleve.jar     # Artefato da aplicação "Eleve"
 │
 ├───Chatbot
-│       chatbot.jar   # Artefato da aplicação "Chatbot"
+│       chatbot.jar   # Artefato da aplicação "Chatbot"
 │
 ├───Database
-│       script_chatbot.sql # Script SQL para o banco do chatbot
-│       script_eleve.sql   # Script SQL para o banco do eleve
+│       script_chatbot.sql # Script SQL para o banco do chatbot
+│       script_eleve.sql   # Script SQL para o banco do eleve
 │
 └───Frontend
-    └───build         # Build estático do frontend
+    └───build         # Build estático do frontend
 ```
+
+---
 
 ## 🛠️ Comandos Úteis
 
@@ -194,9 +213,7 @@ ssh-keygen -f "/home/SEU_USUARIO/.ssh/known_hosts" -R "IP"
 
 # Ver logs de um container em um dos servidores de backend (via SSH)
 # Você precisa estar conectado no servidor de backend primeiro
-docker logs -f rabbitmq
-docker logs -f eleve-app-eleve1     # O nome do host deve bater com seu inventário
-docker logs -f chatbot-app-chat1
+docker logs -f eleve-app-eleve01
 
 # Destruir toda infraestrutura
 terraform destroy
