@@ -213,7 +213,9 @@ ssh-keygen -f "/home/SEU_USUARIO/.ssh/known_hosts" -R "IP"
 
 # Ver logs de um container em um dos servidores de backend (via SSH)
 # Você precisa estar conectado no servidor de backend primeiro
-docker logs -f eleve-app-eleve01
+docker logs -f rabbitmq
+docker logs -f eleve-app-eleve1     # O nome do host deve bater com seu inventário
+docker logs -f chatbot-app-chat1
 
 # Destruir toda infraestrutura
 terraform destroy
