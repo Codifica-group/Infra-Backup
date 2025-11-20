@@ -68,7 +68,7 @@ resource "aws_internet_gateway" "igw" {
   }
 }
 
-# IP Elástico
+# IP Elástico para NAT Gateway
 
 resource "aws_eip" "nat" {
   domain = "vpc"
@@ -294,6 +294,20 @@ resource "aws_instance" "web_server_1" {
   }
 }
 
+# IP ELÁSTICO WEBSERVER
+resource "aws_eip" "web_public_ip" {
+  domain = "vpc"
+
+  tags = {
+    Name = "eip-webserver-01"
+  }
+}
+
+resource "aws_eip_association" "web_ip_assoc" {
+  instance_id = aws_instance.web_server_1.id
+  allocation_id = aws_eip.web_public_ip.id
+}
+
 resource "aws_instance" "app_server_1" {
   ami = data.aws_ami.ubuntu.id
   instance_type = "t3.medium"
@@ -319,11 +333,11 @@ resource "aws_instance" "app_server_2" {
 }
 
 resource "aws_instance" "chatbot_server_1" {
-  ami           = data.aws_ami.ubuntu.id
+  ami = data.aws_ami.ubuntu.id
   instance_type = "t3.medium"
-  subnet_id     = aws_subnet.private.id
+  subnet_id = aws_subnet.private.id
   vpc_security_group_ids = [aws_security_group.app.id]
-  key_name      = var.key_name
+  key_name = var.key_name
 
   tags = {
     Name = "chatbot-server"  
@@ -368,15 +382,15 @@ output "elasticache_endpoint" {
 resource "local_file" "ansible_inventory" {
   filename = "../inventory.ini"
 
-  # Dependência do MQ removida
   depends_on = [
     aws_elasticache_replication_group.main,
+    aws_eip_association.web_ip_assoc,
   ]
 
   content = templatefile(
     "../inventory.ini.tpl",
     {
-      web_public_ip = aws_instance.web_server_1.public_ip
+      web_public_ip = aws_eip.web_public_ip.public_ip
       eleve1_private_ip = aws_instance.app_server_1.private_ip
       eleve2_private_ip = aws_instance.app_server_2.private_ip
       chat1_private_ip = aws_instance.chatbot_server_1.private_ip
@@ -388,12 +402,10 @@ resource "local_file" "ansible_inventory" {
 resource "local_file" "ansible_vars" {
   filename = "../vars.yml"
 
-  # Dependência do MQ removida
   depends_on = [
     aws_elasticache_replication_group.main,
   ]
 
-  # Variável do MQ removida
   content = <<-EOT
     elasticache_endpoint: ${aws_elasticache_replication_group.main.primary_endpoint_address}
     EOT
