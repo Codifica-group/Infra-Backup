@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS agenda_servico (
 
 CREATE TABLE IF NOT EXISTS solicitacao_agenda (
     id INT PRIMARY KEY AUTO_INCREMENT,
-    chat_id INT NOT NULL,
+    chat_id BIGINT NOT NULL,
     pet_id INT NOT NULL,
     valor_deslocamento FLOAT,
     data_hora_inicio DATETIME NOT NULL,
